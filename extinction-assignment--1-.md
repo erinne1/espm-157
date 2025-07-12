@@ -1,0 +1,400 @@
+Is there Enough Evidence of a Sixth Mass Extinction?
+================
+Erinne Yoo
+
+## Integrating IUCN’s API
+
+**Introduction to Mass Extinction:** <br> Paleontologists characterize
+mass extinctions as periods when the Earth loses more than
+three-quarters of its species in a “geologically short interval”. What
+defines a short interval? 2 million years or less. The Big Five
+(Cretaceous, Triassic, Permian, Devonian, Ordovician, from recent to
+oldest) account for 10% of the total extinctions (Jablonski 1995) and
+have a spaced interval of 50-100 million years. Cretaceous period ended
+with the asteroid impact, 65 million years ago. However humans have
+altered the landscape since the Pleistocene. Researchers have speculated
+that carbon emissions, habitat loss, disease, greenhouse gases have
+increased in a rate that is unsustainable. To test these claims we
+utilize information to create legible visual data and draw analyses.
+
+<br>
+
+### First steps Cracking Open the API
+
+Here we make an Rest API request to retrieve JSON formatted information
+to eventually tabular data.
+
+To locate the species count API, find the section ‘Species Count’ with
+the hyperlink showing ‘Example: Total Count’ in the IUCN’s Red List API.
+Using the endpoint, we can narrow species information by region, id,
+category, and other classifications. `GET` is a function from package
+`httr` which we need to retrieve the requested information. `content` is
+another function applied to extract info from the request. We then
+compartmentalize the URL into a base, endpoint, token: ‘base’ is
+analogous to a package name, ‘endpoint’ a function name, and ‘url’ to a
+function call.
+
+``` r
+resp <- GET("https://apiv3.iucnredlist.org/api/v3/speciescount?token=9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee")
+#in this long address above we want to break this long string of text
+base <- "https://apiv3.iucnredlist.org/api/v3"
+endpoint <- "speciescount" 
+token <- "9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee"
+url <- glue("{base}/{endpoint}?token={token}")
+req <- GET(url)
+x<- content(req) #x$speciescount to view how many species 
+```
+
+To get information of all species id and taxonomy, we use its different
+endpoint. The IUCN instructs the list of all the species and the Red
+List category be requested based on pages. Function `paste0` will create
+a convenient list of the page (16 total pages) to be appended into the
+full url. The pages follow the format:
+“<https://apiv3.iucnredlist.org/api/v3/species/page/0?token=9bb4facb6d23f48efbf424bb05c0c1ef1cf6f468393bc745d42179ac4aca5fee>”
+and will be fed into a loop that will store the information into an
+`rds` (R Data Serialization).
+
+``` r
+species_endpoint<- "species"
+page <- paste0("page/", 0:15)
+all_pages <- glue("{base}/{species_endpoint}/{page}?token={token}")
+```
+
+The URL’s have their contents extracted in this function which speeds
+the process by ensuring all_species.rds exists. Otherwise, this `if`
+loop requests GET as long long as there are no errors.
+
+``` r
+if(!file.exists("all_species.rds")) {
+  all_species <- map(all_pages, GET, .progress = TRUE)
+  status <- map_int(all_species, status_code)
+  stopifnot(all(status < 400))
+  write_rds(all_species, "all_species.rds")
+}
+```
+
+The if loop created a file called `all_species`, a response object in
+JSON structure, and `all_resp` takes that JSON and gets the summary
+information content.
+
+``` r
+all_species <- read_rds("all_species.rds")
+all_resp <- map(all_species, content, encoding = "UTF-8")
+```
+
+<br> **Creating the data table** Given the list of species and resp, you
+can construct a dataframe with the columns: scientific name, category,
+class, phylum. There were 16 pages of content so we iterate over each
+page, using package `purrr`’s `map_chr` to get its result and the
+specific categories.
+
+``` r
+sci_name <- map(all_resp, \(page) map_chr(page$result, "scientific_name")) |> list_c()
+category <- map(all_resp, \(page) map_chr(page$result, "category")) |> list_c()
+class <-  map(all_resp, \(page) map_chr(page$result, "class_name")) |> list_c()
+phylum <-  map(all_resp, \(page) map_chr(page$result, "phylum_name")) |> list_c()
+
+all_species <- tibble(sci_name, category, class, phylum)
+```
+
+9 categories or tiers of threatened status: Not Evaluated (NE), Data
+Deficient (DD), Least Concern (LC), Near Threatened (NT), Vulnerable
+(VU), Endangered (EN), Critically Endangered (CR), Extinct in the Wild
+and Extinct (EX). Filtering the category equal to “EX” will select the
+extinct species from the table `all_species` that we just created.
+
+``` r
+extinct_species<- all_species |> filter(category=="EX")
+```
+
+Take the column (that is a list of all scientific names) and use this
+long glued list to encode next.
+
+``` r
+sp <- extinct_species$sci_name
+```
+
+`map` works like a loop, applying the HTTR function `content` over
+extinct species to extract information into a string. The
+`narrative_population` is a short verbal description or sighting noting
+when a species was declared extinct, where last observed, and/or cause
+of overall death. Not all species have field note entries, however.
+
+``` r
+narrative_contents <- map(ex_narrative, content) #HTTR function content
+narrative_population <- map(narrative_contents, \(x) map_chr(x$result[1], "population", .default = ""))
+narrative_rationale <- map(narrative_contents, \(x) x$result[[1]]$rationale)
+#for guidance refer to rstudio.github.io/cheatsheets/string.pdf 
+```
+
+Using narrative_population from above, we use function `map_chr` that
+loops to convert a particular match of text into integer. Through Regex
+commands: we take strings that have exactly 4 digits in a row,
+indicating years. We assume that if there is such match, the numeric
+character mentioned is referencing the latest recorded year of the
+species.
+
+``` r
+last_seen<-narrative_population |> 
+  map_chr(str_extract, "\\d{4}" ) |>
+  as.integer()
+
+extinction_dates <- tibble(sci_name=ext_sci_name,last_seen) |> distinct()
+combined <- all_species |> left_join(extinction_dates)
+```
+
+Since we are interested in grouping into taxonomic classes of
+cartilaginous vertebrates (mammals, birds, amphibians, reptiles, and
+fish) we select the 5 classes and save it to `total_sp`. We will use
+this class grouped total to calculate the extinction msy per taxonomic
+class.
+
+``` r
+total_sp <- combined |> 
+  filter(class %in% c("MAMMALIA", "AVES", "AMPHIBIA", "REPTILIA", "ACTINOPTERYGII")) |>
+  count(class, name = "total")
+```
+
+In order to make a visual plot illustrating the increase in E/MSY over
+time, we need to first make a table that calculates this column: The
+number of occurrences of the five main classes is the total,
+`replace_na` is a `tidyverse` function that will replace missing
+`last_seen` values with the current year, 2023. However, this may be
+slightly inaccurate because some extinct species with insufficient data
+may be misrepresented and falsely stamped as last seen in 2023. For
+example *Ectopistes migratorius* and *Thylacinus cynocephalus* went
+extinct in the 20th century but are marked as extinct in the 21st.
+However, we will overlook this for the sake of the assignment
+
+``` r
+final_tbl <- 
+  combined |> 
+  filter(category == "EX") |>
+  filter(class %in% c("MAMMALIA", "AVES", "AMPHIBIA", "REPTILIA", "ACTINOPTERYGII")) |>
+  mutate(last_seen = replace_na(last_seen, 2023),
+         century =  str_extract(last_seen, "\\d{2}")) |>
+  count(century, class) |> left_join(total_sp) |>
+  mutate(extinction_msy = n / total * 10000) # extinctions per million-species-years
+#final_tbl 
+```
+
+## Recreating Ceballos et. al Graph
+
+- from *Accelerated modern human–induced species losses: Entering the
+  sixth mass extinction* [Ceballos et al
+  (2015)](http://doi.org/10.1126/sciadv.1400253)
+
+**Figure 1** <br> This graph is inspired by Ceballos and colleagues,
+which shows extinction rates across centuries.
+
+``` r
+final_tbl %>% filter(class %in% c("MAMMALIA", "AVES", "ACTINOPTERYGII", "AMPHIBIA", "REPTILIA")) %>%  ggplot( aes(x = century, y = extinction_msy, color = class, group = class)) +
+  geom_line()  +   theme_test() + ggtitle("Extinction per Million Species Years over 1400-2023 ")
+```
+
+![](extinction-assignment--1-_files/figure-gfm/unnamed-chunk-21-1.png)<!-- -->
+
+**Extinction/Million Species Years and The Main Cause of Decline for
+each Vertebrate Class:**
+
+Actinopterygii or finned fish: reasons for extinction include habitat
+loss, water abstraction, drained lakes, according to the IUCN
+assessments. Nearly all causes are attributed to human-interfered
+events, such as the introduction of non-native species, polluted lakes,
+irrigation projects, and overfishing. It is to be noted that a majority
+of the declared species tallied in the IUCN are freshwater fishes,
+highlighting insufficient available aquatic species.
+
+Amphibians: Disease outbreak and habitat loss are the leading causes
+accounting for for 91% of amphibian declines among recent deteriorating
+amphibian populations. Chytridiomiosis caused by *Batrachochytrium
+dendrobatidis*, a fungus, emerging as early as 1938 (Weldon 2004)
+impacts frogs’ skins. Although the table results presents only 36 lost
+amphibian species over the past 500 years, 723 species are critically
+endangered (10%) and another 1,144 (15%) are endangered.
+
+Aves: Most birds have disappeared from 1800-1900 (rather than the 21st
+century) and also from hunting pressures, deforestation, disease with
+the onset of colonization. Some island birds faced natural predation and
+were simply prone to stochasticity. However, there is a increasing trend
+on continents in recent years.
+
+Mammalia: Rodents and bovidae constitute a large majority of extinct
+mammals, who died due to the impact of colonization parallel to birds of
+the 20th century.
+
+Reptilia: Contributing factors are habitat loss, exploitation, and
+predation.
+
+<img src="https://espm-157.carlboettiger.info/img/extinctions.jpg"
+style="width:30.0%" /> <br> While the graph constructed in Figure 1
+shows the change in MSY over time, Ceballos cumulative graph shows the
+proportion of extinctions over time (the number of total species extinct
+at the year over the total number of species documented since 1500). Out
+of the percentage of vertebrates, the percentage of extinct mammals and
+birds outweigh the proportion of other vertebrates, most likely due to
+K-selected speciation meaning sparse gestation intervals and less
+offspring implying less time for a population rebound, as well as
+overlapping habitats that directly conflict with human interests.
+
+**Documented Extinctions Under Water?** <br> Although the main five
+classes in Figure 1 show the important terrestrial and aquatic animals,
+it still omitted other aquatic invertebrates. Out of the 36 phyla, we
+are given information of 19 phyla. I decided to focus on mollusca
+(octopus and clams), cnidaria (jellyfish), to see how the ocean’s
+biodiversity has been affected. <br> **Figure 2**
+
+``` r
+total_phylum_aqua <- combined |> filter(phylum %in% c("MOLLUSCA", "ECHINODERMATA", "CNIDARIA")) |> count(phylum, name = "total")
+
+final_tbl_aqua <- 
+  combined |> filter(category == "EX") |> filter(phylum %in% c("MOLLUSCA", "ECHINODERMATA", "CNIDARIA")) |>
+  mutate(last_seen = replace_na(last_seen, 2023), century =  str_extract(last_seen, "\\d{2}")) |>
+  count(century, phylum) |> left_join(total_phylum_aqua) |> mutate(extinction_msy = n / total * 10000) 
+final_tbl_aqua
+```
+
+    # A tibble: 3 × 5
+      century phylum       n total extinction_msy
+      <chr>   <chr>    <int> <int>          <dbl>
+    1 18      MOLLUSCA     4  9133           4.38
+    2 19      MOLLUSCA    29  9133          31.8 
+    3 20      MOLLUSCA   272  9133         298.  
+
+``` r
+ggplot(data=en_cr_tbl_aqua, aes(x=phylum, y=n, fill=category)) +
+  geom_bar(stat="identity", width=0.3) + scale_fill_hue(c = 40) + ggtitle("Critically Endangered and Endangered Phyla in the 21st century of Invertebrates") + labs(x="Phylum", y = "Number of species") + scale_fill_brewer(palette="Paired")+theme_minimal() 
+```
+
+    FALSE Scale for fill is already present.
+    FALSE Adding another scale for fill, which will replace the existing scale.
+
+![](extinction-assignment--1-_files/figure-gfm/unnamed-chunk-24-1.png)<!-- -->
+<br> Interestingly, no cnidaria and echinoderms went extinct over the
+past 500 years on paper. Even if there were undocumented jellyfish, the
+difference between observed cnidarian and mollusk survival is very
+stark. Despite documentaries and agencies emphasizing the rapid decline
+of reefs (NASA estimates 14% of reefs lost since 2009), the reasons
+could range from the simple anatomy of cnidarians: Anthozoa (commonly
+seen as corals, anemones, polyps) and Medusozoa (jellyfish) have high
+metabolism and no organs. But given that cnidarians require moderately
+warm temperatures, (around 70-80 Fahrenheit), the global temperature
+increase could put them in risk- coral bleaching demonstrates the
+cnidarian’s inability to tolerate warmer waters. Mollusk extinction
+count on the other hand, is actually largely due to nonmarine organisms.
+Lydeard et. al cites Polynesian colonization and the subsequent
+agricultural urban development as one major cause of the decline.
+Habitat modification like the replacement of unsuitable plant species
+and introduction of predator rats or even other assassin snails.
+
+## How many species were declared extinct since 1500?
+
+``` r
+total_ex_sp <- combined |> 
+  filter(class %in% c("MAMMALIA", "AVES", "AMPHIBIA", "REPTILIA", "ACTINOPTERYGII")) %>% filter(category=="EX") %>%
+  count(class, name = "total")
+total_ex_sp
+```
+
+    # A tibble: 5 × 2
+      class          total
+      <chr>          <int>
+    1 ACTINOPTERYGII    87
+    2 AMPHIBIA          36
+    3 AVES             159
+    4 MAMMALIA          94
+    5 REPTILIA          32
+
+Claims that “hundreds of so-and-so species” are going extinct may be
+slightly exaggerated according to this project’s findings.
+
+### How about endangered?
+
+In order to create a grouped bar chart time series, use the similar
+functions to `final_tbl`, except with a few modifications that place
+importance on the risk tier order. **Figure 3**
+
+``` r
+everything_table <- 
+  combined |> filter(class %in% c("GASTROPODA","BIVALVIA", "ACTINOPTERYGII", "REPTILIA", "INSECTA", "ARACHNIDA", "AMPHIBIA", "AVES", "MAMMALIA")) |>
+  filter(category%in% c("EX", "CR", "EW", "EN", "VU", "NT", "LC", "DD","NE")) |>
+  count(category, class) |> 
+  left_join(total_sp) 
+```
+
+    FALSE Joining with `by = join_by(class)`
+
+``` r
+everything_table <- everything_table %>%
+  mutate(category =  factor(category, levels = c("EX", "CR", "EW", "EN", "VU", "NT", "LC", "DD","NE"))) %>%
+  arrange(category)
+
+ggplot(data=everything_table, aes(x=class, y=n, fill=category)) +
+  geom_bar(stat="identity", width=0.3) + scale_fill_hue(c = 40) + ggtitle("Proportion of Species in IUCN Categorized by Class (1500-2023)") + labs(x="Classification", y = "Number of species") + scale_fill_brewer(palette="Spectral")+theme_minimal()  +theme(text = element_text(size=13), axis.text.x = element_text(angle=90, hjust=1))
+```
+
+    FALSE Scale for fill is already present.
+    FALSE Adding another scale for fill, which will replace the existing scale.
+
+![](extinction-assignment--1-_files/figure-gfm/unnamed-chunk-26-1.png)<!-- -->
+<br> When accounting for more biological classes as part of our
+analysis, we can see the relative magnitudes of extinction. The
+proportion of Extinct in wild, critically endangered, and extinct
+species within the past five centuries have increased proportionally.
+
+<br>
+
+## In Conclusion: Is the Anthrpocene bringing about the Sixth Mass Extinction Event?
+
+Recent Vertebrate extinction of cartilaginous animals- fish, reptiles,
+mammals, birds, amphibians- are accelerated compared to the Cretaceous
+mass extinction (Lindqvist et al., 2019). The fossil record provides
+insight to how many and approximately how many years ago a species went
+extinct. The background extinction rate is “1 species extinction per
+10,000 species per 100 years”. Our findings confirm events preceding the
+anthropocene have increased the extinction rate by 1000.
+
+Mathemetically, the Cretaceous–Paleogene (K-T) Extinction lost about 70%
+of species, meaning about 2 species per year. While it may seem like the
+total extinct species are not very high in the modern era, the rate is
+definitely an alarming leap. The looming threat of species at the brisk
+of extinction if not yet recorded are not accounted for either. If our
+rate of extinction was considered relatively normal, we should expect to
+be seeing 10 through 100 species lost per year- across the biological
+phylum. However, we are averaging 10 through 100 per year within each
+categorical class.
+
+## Next Steps
+
+Some researchers accuse the IUCN of being biased (Cowie 2022) due to
+invertebrate counts being underrepresented. The IUCN declares a taxon
+extinct only after thorough surveys and some aquatic species have not
+been discovered or thoroughly tracked; the NOAA estimates less than 20%
+of the ocean’s true number of species have yet to be classified.
+Unfortunately, discovering more species will require funding. The dates
+from the IUCN are missing and more accurate analyses can be done,
+perhaps by obtaining a Google search API with Regex to filter keywords
+that have the word ‘extinct’ and a 4 consecutive numeric across sites.
+To manually observe regions, you could an endpoint variable with
+`region/list`, to get the list of available country indexes. Use the
+`if` function and `purrr` function `map` to loop over all pages based on
+regions for the purpose of comparing the countries ranked on most
+endangered statuses.
+
+#### Computational Topics Recap
+
+- Accessing data from a RESTful API
+- Error handling
+- JSON data format
+- Regular expressions
+- Working with missing values
+
+#### Additional references:
+
+- <http://www.hhmi.org/biointeractive/biodiversity-age-humans> (Video)
+- [Barnosky et al. (2011)](http://doi.org/10.1038/nature09678)
+- [Pimm et al (2014)](http://doi.org/10.1126/science.1246752)
+- [Sandom et al (2014)](http://dx.doi.org/10.1098/rspb.2013.3254)
+- [Weldon et al (2004)](http://doi.org/10.3201/eid1012.030804)
+- [Lydeard et al
+  (2004)](https://doi.org/10.1641/0006-3568(2004)054%5B0321:TGDONM%5D2.0.CO;2)
