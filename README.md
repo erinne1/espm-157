@@ -1,12 +1,3 @@
-
-[![Reproducibility](https://github.com/espm-157/extinction-erinne1/actions/workflows/main.yml/badge.svg)](https://github.com/espm-157/extinction-erinne1/actions/workflows/main.yml)
-
-## Team Member
-
-- Erinne Yoo, @erinne1
-
-Independent
-
 ## Sixth Mass Extinction?
 
 Earth is 4.6 billion years old and extinctions are a normal part of 
