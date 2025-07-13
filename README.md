@@ -1,14 +1,14 @@
-## Sixth Mass Extinction?
+## Is the Sixth Mass Extinction ongoing?
 
-Earth is 4.6 billion years old and extinctions are a normal part of 
-We validate for ourselves whether the notion species are being lost at a 1000 times the background rate is true. 
+Earth is 4.6 billion years old and extinctions are a normal part of evolutionary consequences.
+We validate for ourselves whether the notion that species are being lost at a 1000 times the background rate is true. 
 In this module we focus on the past 500 years using public information but with parsing data through request and retrieval.  
 
 ## Newly introduced focus: Application Programming Interface (API)
 By essentially pinging
 A RESTful API supports formats like HTML, Json, text, Xml. It is commonly used by businesses, web applications to access data from other useful applications.
 
-### Important packages
+### Important R packages from this project
 - `httr`: performs API requests for information
 - `jsonlite`: converting objects from json into R
 - `purrr`: loops over lists   
@@ -16,7 +16,7 @@ A RESTful API supports formats like HTML, Json, text, Xml. It is commonly used b
 - `dplyr`, `ggplot`: graph plotting
 
 
-### Red List site 
+### Red List
 - https://apiv3.iucnredlist.org/api/v3/docs International Union for Conservation of Nature
 
 ## Findings
